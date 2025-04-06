@@ -25,9 +25,6 @@ streamlit run app.py
 3. Input your job description or URL.  
 4. View, copy, or download the recommendations in JSON.
 
-## Contributing
-Contributions welcome! Please open issues or pull requests for bug fixes and enhancements.
-
 ## License
 MIT © keshav
 
