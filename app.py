@@ -4,7 +4,6 @@ import requests
 from bs4 import BeautifulSoup
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
-import json
 
 # -----------------------------
 # Step 1: Scrape SHL Catalog Data
@@ -18,35 +17,38 @@ def fetch_shl_catalog():
     url = "https://www.shl.com/solutions/products/product-catalog/"
     try:
         response = requests.get(url, timeout=10)
-        response.raise_for_status()
+        response.raise_for_status()  # Raise an exception for HTTP errors
     except Exception as e:
         st.error(f"Error fetching SHL catalog: {e}")
         return pd.DataFrame()
 
+    # Parse the HTML content with BeautifulSoup
     soup = BeautifulSoup(response.text, "html.parser")
     products = []
 
-    # Find product tiles by CSS selector (update if site changes)
-    product_tiles = soup.find_all("div", class_="custom__table-responsive")
-    if not product_tiles:
-        product_tiles = soup.find_all("li", class_="product-item")
-
+    # Find all table row elements that might contain product information
+    product_tiles = soup.find_all("tr")
+    
+    # Loop through each row (tile) to extract product details
     for tile in product_tiles:
-        # Extract name and URL
+        # Look for an anchor (<a>) tag with an href attribute inside the tile
         anchor = tile.find("a", href=True)
         if anchor:
+            # Extract the text (assessment name) and href (URL)
             name = anchor.get_text(strip=True)
             link = anchor["href"]
+            # If the link is relative, prepend the base URL
             if not link.startswith("http"):
                 link = "https://www.shl.com" + link
         else:
             name, link = "Unknown", "#"
 
-        # Extract support flags from tile text
+        # Extract additional information (support flags) from the text in the row
         text = tile.get_text(" ", strip=True).lower()
         remote = "Yes" if "remote" in text else "No"
         adaptive = "Yes" if ("adaptive" in text or "irt" in text) else "No"
 
+        # Append the details to our list of products
         products.append({
             "Assessment Name": name,
             "URL": link,
@@ -54,9 +56,10 @@ def fetch_shl_catalog():
             "Adaptive/IRT Support": adaptive
         })
 
+    # Convert the list of products to a pandas DataFrame and return it
     return pd.DataFrame(products)
 
-# Load catalog into DataFrame
+# Load catalog data into a DataFrame
 df_assessments = fetch_shl_catalog()
 if df_assessments.empty:
     st.error("No product data fetched. Check website structure or network.")
@@ -88,18 +91,24 @@ def recommend_assessments(query: str, df: pd.DataFrame, top_n: int = 10) -> pd.D
     computes cosine similarity with the query,
     and returns top_n recommendations.
     """
+    # Extract the list of assessment names from the DataFrame
     names = df["Assessment Name"].tolist()
-    corpus = [query] + names  # first element is query
 
-    # Vectorize and compute similarity
+    # Fit the TF-IDF vectorizer on the assessment names only
     vec = TfidfVectorizer(stop_words="english")
-    tfidf = vec.fit_transform(corpus)
-    sims = cosine_similarity(tfidf[0:1], tfidf[1:]).flatten()
+    name_vectors = vec.fit_transform(names)
 
-    # Pick top N
+    # Transform the user query using the same vectorizer
+    query_vector = vec.transform([query])
+    
+    # Compute cosine similarity between the query vector and each assessment name vector
+    sims = cosine_similarity(query_vector, name_vectors).flatten()
+
+    # Sort the indices based on descending similarity scores and select top_n recommendations
     idx = sims.argsort()[::-1][:top_n]
     result = df.iloc[idx].copy()
     result["Score"] = sims[idx]
+
     return result
 
 # -----------------------------
@@ -111,7 +120,7 @@ st.markdown("""
 Enter a job description or URL, and get the top SHL assessment recommendations.
 """)
 
-# Choose input mode
+# Choose the input mode between manual text or a URL from which text will be extracted
 mode = st.radio("Input type:", ["Text", "URL"])
 if mode == "Text":
     user_query = st.text_area("Enter job description or query:")
@@ -120,33 +129,20 @@ else:
     user_query = extract_text_from_url(url) if url else ""
 
 if user_query:
-    # Generate recommendations
+    # Generate recommendations using the user's query
     recs = recommend_assessments(user_query, df_assessments, top_n=10)
 
-    # Prepare display table
+    # Define a helper function to convert assessment names to clickable links
     def linkify(row):
         return f'<a href="{row["URL"]}" target="_blank">{row["Assessment Name"]}</a>'
 
     display_df = recs.copy()
     display_df["Assessment Name"] = display_df.apply(linkify, axis=1)
+    # Remove extra columns that are not needed in the display
     display_df = display_df.drop(columns=["URL", "Score"])
 
     st.write("### Recommendations")
+    # Display the recommendations as an HTML table
     st.write(display_df.to_html(escape=False, index=False), unsafe_allow_html=True)
-
-    # Convert to JSON and show copy/download buttons
-    records = recs.drop(columns=["URL", "Score"]).to_dict(orient="records")
-    json_output = json.dumps(records, indent=2)
-
-    st.write("### JSON Output")
-    st.code(json_output, language="json")
-
-    st.download_button(
-        "Download JSON",
-        data=json_output,
-        file_name="recommendations.json",
-        mime="application/json"
-    )
 else:
     st.info("Please provide text or URL to get recommendations.")
-    
