@@ -12,8 +12,7 @@ import json
 def fetch_shl_catalog():
     """
     Fetches and parses the SHL product catalog page,
-    returning a DataFrame with assessment names, URLs,
-    and support flags.
+    returning a DataFrame with assessment names, URLs, and support flags.
     """
     url = "https://www.shl.com/solutions/products/product-catalog/"
     try:
@@ -89,63 +88,93 @@ def recommend_assessments(query: str, df: pd.DataFrame, top_n: int = 10) -> pd.D
     and returns top_n recommendations.
     """
     names = df["Assessment Name"].tolist()
-    corpus = [query] + names  # first element is query
-
-    # Vectorize and compute similarity
+    corpus = [query] + names  # first element is the query
     vec = TfidfVectorizer(stop_words="english")
     tfidf = vec.fit_transform(corpus)
     sims = cosine_similarity(tfidf[0:1], tfidf[1:]).flatten()
 
-    # Pick top N
+    # Pick top_n indices based on cosine similarity
     idx = sims.argsort()[::-1][:top_n]
     result = df.iloc[idx].copy()
     result["Score"] = sims[idx]
     return result
 
 # -----------------------------
-# Step 4: Streamlit UI
+# Streamlit UI (for interactive demo)
 # -----------------------------
-st.title("SHL Assessment Recommendation System")
+def run_streamlit_app():
+    st.title("SHL Assessment Recommendation System")
 
-st.markdown("""
-Enter a job description or URL, and get the top SHL assessment recommendations.
-""")
+    st.markdown("""
+    Enter a job description or URL, and get the top SHL assessment recommendations.
+    """)
 
-# Choose input mode
-mode = st.radio("Input type:", ["Text", "URL"])
-if mode == "Text":
-    user_query = st.text_area("Enter job description or query:")
-else:
-    url = st.text_input("Enter job description URL:")
-    user_query = extract_text_from_url(url) if url else ""
+    # Choose input mode
+    mode = st.radio("Input type:", ["Text", "URL"])
+    if mode == "Text":
+        user_query = st.text_area("Enter job description or query:")
+    else:
+        url = st.text_input("Enter job description URL:")
+        user_query = extract_text_from_url(url) if url else ""
 
-if user_query:
-    # Generate recommendations
-    recs = recommend_assessments(user_query, df_assessments, top_n=10)
+    if user_query:
+        recs = recommend_assessments(user_query, df_assessments, top_n=10)
 
-    # Prepare display table
-    def linkify(row):
-        return f'<a href="{row["URL"]}" target="_blank">{row["Assessment Name"]}</a>'
+        # Prepare display table with clickable links
+        def linkify(row):
+            return f'<a href="{row["URL"]}" target="_blank">{row["Assessment Name"]}</a>'
 
-    display_df = recs.copy()
-    display_df["Assessment Name"] = display_df.apply(linkify, axis=1)
-    display_df = display_df.drop(columns=["URL", "Score"])
+        display_df = recs.copy()
+        display_df["Assessment Name"] = display_df.apply(linkify, axis=1)
+        display_df = display_df.drop(columns=["URL", "Score"])
 
-    st.write("### Recommendations")
-    st.write(display_df.to_html(escape=False, index=False), unsafe_allow_html=True)
+        st.write("### Recommendations")
+        st.write(display_df.to_html(escape=False, index=False), unsafe_allow_html=True)
 
-    # Convert to JSON and show copy/download buttons
-    records = recs.drop(columns=["URL", "Score"]).to_dict(orient="records")
-    json_output = json.dumps(records, indent=2)
+        # Convert to JSON and show copy/download buttons
+        records = recs.drop(columns=["URL", "Score"]).to_dict(orient="records")
+        json_output = json.dumps(records, indent=2)
 
-    st.write("### JSON Output")
-    st.code(json_output, language="json")
+        st.write("### JSON Output")
+        st.code(json_output, language="json")
+    else:
+        st.info("Please provide text or URL to get recommendations.")
 
-    st.download_button(
-        "Download JSON",
-        data=json_output,
-        file_name="recommendations.json",
-        mime="application/json"
-    )
-else:
-    st.info("Please provide text or URL to get recommendations.")
+# Uncomment the line below if you want to run the Streamlit app directly.
+# run_streamlit_app()
+
+
+# -----------------------------
+# FastAPI Endpoint
+# -----------------------------
+from fastapi import FastAPI, HTTPException
+
+app = FastAPI()
+
+@app.get("/query")
+def query_recommendations(q: str, top_n: int = 10):
+    """
+    API endpoint to return recommendations based on a query.
+    Query parameter:
+        - q: The search query (e.g., "java developer")
+        - top_n: (Optional) Number of top recommendations to return (default is 10)
+    Example: GET /query?q=java+developer&top_n=5
+    """
+    if df_assessments.empty:
+        raise HTTPException(status_code=404, detail="No product data available")
+    try:
+        df_result = recommend_assessments(q, df_assessments, top_n)
+        results = df_result.to_dict(orient="records")
+        return {"results": results}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# -----------------------------
+# Run FastAPI with Uvicorn (if running as a standalone API)
+# -----------------------------
+if __name__ == "__main__":
+    # To run the FastAPI endpoint, use: uvicorn <filename_without_py>:app --reload
+    # Example: uvicorn my_api:app --reload
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
